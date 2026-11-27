@@ -1,0 +1,7 @@
+users:
+  tom:
+    disabled: false
+    displayname: "Tom"
+    password: "$argon2id$..."
+    email: tom@bourg.local
+    groups: [admins]

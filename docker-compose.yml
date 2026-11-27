@@ -1,0 +1,94 @@
+services:
+  nginx:
+    image: nginx:1.31.10-alpine3.24
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: [/var/cache/nginx, /run, /tmp]
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./frontend:/usr/share/nginx/html:ro
+      - ./data/nextcloud:/var/www/html:ro
+    depends_on: [authelia, backend, nextcloud]
+    networks:
+      proxy:
+        aliases: [cloud.bourg.local]
+
+  authelia:
+    image: authelia/authelia:4.39.28
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    env_file: env/authelia.env
+    volumes: ["./authelia:/config"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [proxy, db]
+
+  backend:
+    image: node:26.13.1-alpine3.24
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    env_file: env/backend.env
+    working_dir: /app
+    command: sh -c "npm ci --omit=dev && node src/index.js"
+    volumes: ["./backend:/app"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      ollama: { condition: service_started }
+    networks: [proxy, ai, db]
+
+  ollama:
+    image: ollama/ollama:0.40.18-rocm
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    volumes: ["./data/ollama:/root/.ollama"]
+    networks: [ai]
+
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg19-trixie
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    env_file: env/postgres.env
+    volumes:
+      - ./data/postgres:/var/lib/postgresql
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 10
+    networks: [db]
+
+  redis:
+    image: redis:8.12.0-alpine3.23
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    env_file: env/redis.env
+    command: sh -c 'exec redis-server --requirepass "$$REDIS_PASSWORD" --save 60 1'
+    volumes: ["./data/redis:/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      retries: 10
+    networks: [db]
+
+  nextcloud:
+    image: nextcloud:35.0.3-fpm-alpine
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    env_file: env/nextcloud.env
+    volumes: ["./data/nextcloud:/var/www/html"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [proxy, db]
+
+networks:
+  proxy:
+  ai:
+  db:
+    internal: true
